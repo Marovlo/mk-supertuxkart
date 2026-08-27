@@ -32,6 +32,11 @@ class KeyboardConfig;
   */
 class KeyboardDevice : public InputDevice
 {
+private:
+    /** Id of the physical keyboard this device stands for, as reported by
+      * mklib; -1 when mklib is not in use. */
+    int m_mklib_id;
+
 public:
     KeyboardDevice();
     KeyboardDevice(KeyboardConfig *configuration);
@@ -41,6 +46,13 @@ public:
                                     InputManager::InputDriverMode mode,
                                     PlayerAction *action, int* value = NULL
                                     ) OVERRIDE;
+
+    // ------------------------------------------------------------------------
+    /** Sets the mklib id of the physical keyboard behind this device. */
+    void setMklibId(int id) { m_mklib_id = id; }
+    // ------------------------------------------------------------------------
+    /** Returns the mklib id, or -1 when mklib is not in use. */
+    int getMklibId() const { return m_mklib_id; }
 
 };   // KeyboardDevice
 

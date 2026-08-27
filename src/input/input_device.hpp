@@ -111,6 +111,10 @@ public:
     /** Returns the name of this device. */
     const std::string& getName() const { return m_name; }
     // ------------------------------------------------------------------------
+    /** Sets the name of this device. mklib can tell physical keyboards apart,
+     *  so each keyboard device gets the name of the device it stands for. */
+    void setName(const std::string& name) { m_name = name; }
+    // ------------------------------------------------------------------------
     void setConnected(bool val) { m_connected = val; }
     // ------------------------------------------------------------------------
     bool isConnected() const { return m_connected; }

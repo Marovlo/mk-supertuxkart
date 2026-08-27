@@ -32,6 +32,9 @@
 #include "input/gamepad_device.hpp"
 #include "input/input.hpp"
 #include "input/keyboard_device.hpp"
+#ifdef ENABLE_MKLIB
+#include "input/mklib/mklib_input_bridge.hpp"
+#endif
 #include "input/multitouch_device.hpp"
 #include "input/sdl_controller.hpp"
 #include "input/wiimote_manager.hpp"
@@ -107,6 +110,10 @@ InputManager::InputManager() : m_mode(BOOTSTRAP),
     Log::debug("InputManager", "Initialising InputManager!");
     m_device_manager = new DeviceManager();
     m_device_manager->initialize();
+
+    // mklib is started from update(): its device registration needs the
+    // global input_manager pointer, which does not exist yet while we are
+    // inside the InputManager constructor.
 
     m_master_player_only = false;
 #ifndef SERVER_ONLY
@@ -244,6 +251,14 @@ SDLController* InputManager::getSDLController(unsigned i) {
 // -----------------------------------------------------------------------------
 void InputManager::update(float dt)
 {
+#ifdef ENABLE_MKLIB
+    // mklib owns the keyboard: drain its events and route them per device.
+    // Started here (not in the constructor) because it registers one keyboard
+    // device per physical keyboard, which needs this manager to be usable.
+    if (!MklibInputBridge::get()->isRunning())
+        MklibInputBridge::get()->start();
+    MklibInputBridge::get()->update(dt);
+#endif
 #ifdef ENABLE_WIIUSE
     if (wiimote_manager)
         wiimote_manager->update();
@@ -289,6 +304,9 @@ const irr::SEvent& InputManager::getEventForGamePad(unsigned i) const
  */
 InputManager::~InputManager()
 {
+#ifdef ENABLE_MKLIB
+    MklibInputBridge::destroy();
+#endif
 #ifndef SERVER_ONLY
     m_sdl_controller.clear();
 #endif
@@ -802,7 +820,15 @@ void InputManager::dispatchInput(Input::InputType type, int deviceID,
                     if (type == Input::IT_KEYBOARD)
                     {
                         //Log::info("InputManager", "New Player Joining with Key %d", button);
-                        device = m_device_manager->getKeyboardFromBtnID(button);
+#ifdef ENABLE_MKLIB
+                        // With mklib the physical keyboard is known: bind the
+                        // joining player to *that* device. Looking the device
+                        // up by key would hand every player to the same
+                        // keyboard, which is exactly what we are avoiding.
+                        device = m_device_manager->getKeyboardFromDeviceId(deviceID);
+#endif
+                        if (device == NULL)
+                            device = m_device_manager->getKeyboardFromBtnID(button);
                     }
                     else if (type == Input::IT_STICKBUTTON ||
                              type == Input::IT_STICKMOTION    )
@@ -1052,6 +1078,21 @@ EventPropagation InputManager::input(const SEvent& event)
     }
     else if (event.EventType == EET_KEY_INPUT_EVENT)
     {
+#ifdef ENABLE_MKLIB
+        // Events synthesised by the bridge only carry the typed character for
+        // text entry; the action was already dispatched by the bridge itself.
+        if (MklibInputBridge::get()->isSyntheticEvent())
+        {
+            MklibInputBridge::get()->clearSyntheticFlag();
+            return EVENT_LET;
+        }
+        // mklib delivers keyboard input per physical device, so ignore the
+        // OS-level events to avoid handling every key press twice. When mklib
+        // is unavailable (for instance when input monitoring was denied) we
+        // fall through and keep using the regular Irrlicht keyboard events.
+        if (MklibInputBridge::get()->isRunning())
+            return EVENT_BLOCK;
+#endif
         // On some systems (linux esp.) certain keys (e.g. [] ) have a 0
         // Key value, but do have a value defined in the Char field.
         // So to distinguish them (otherwise [] would both be mapped to

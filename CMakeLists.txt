@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.12...4.0)
 
 # root CMakeLists for the SuperTuxKart project
-project(SuperTuxKart)
+# OBJCXX is enabled explicitly: the macOS sources (.mm) are compiled as CXX
+# with -x objective-c++, but modern CMake still needs the language enabled to
+# have its rule variables defined at generate time.
+project(SuperTuxKart C CXX OBJCXX)
 set(PROJECT_VERSION "git")
 
 add_definitions( -DSUPERTUXKART_VERSION="${PROJECT_VERSION}" )
@@ -23,6 +26,7 @@ endif()
 
 option(SERVER_ONLY "Create a server only (i.e. no graphics or sound)" OFF)
 option(CHECK_ASSETS "Check if assets are installed in ../stk-assets" ON)
+option(USE_MKLIB "Use mklib for per-device (multi-keyboard) input" OFF)
 option(USE_SYSTEM_ANGELSCRIPT "Use system angelscript instead of built-in angelscript. If you enable this option, make sure to use a compatible version." OFF)
 option(USE_SYSTEM_ENET "Use system ENet instead of the built-in version, when available." ON)
 option(USE_SYSTEM_MCPP "Use system mcpp instead of the built-in version, when available." ON)
@@ -873,6 +877,31 @@ if(USE_WIIUSE)
     endif()
     add_definitions(-DENABLE_WIIUSE)
 
+endif()
+
+# mklib
+# ------
+# Provides per-physical-device keyboard input, which allows several keyboards
+# to be used at once for local split-screen multiplayer. Off by default so a
+# plain build is unaffected.
+if(USE_MKLIB)
+    set(MKLIB_ROOT "" CACHE PATH "Path to the mklib source tree")
+    if(NOT MKLIB_ROOT OR NOT EXISTS "${MKLIB_ROOT}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "USE_MKLIB is ON but MKLIB_ROOT does not point to a mklib source tree.")
+    endif()
+
+    set(MKLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(MKLIB_BUILD_DEMO OFF CACHE BOOL "" FORCE)
+    set(MKLIB_BUILD_MOUSE_DEMO OFF CACHE BOOL "" FORCE)
+    set(MKLIB_BUILD_FLAPPYBIRD_DEMO OFF CACHE BOOL "" FORCE)
+    set(MKLIB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${MKLIB_ROOT} ${CMAKE_BINARY_DIR}/mklib)
+
+    include_directories(${MKLIB_ROOT}/include)
+    target_link_libraries(supertuxkart mklib)
+    add_definitions(-DENABLE_MKLIB)
+    message(STATUS "mklib input enabled (per-device keyboards).")
 endif()
 
 if(MSVC OR MINGW)

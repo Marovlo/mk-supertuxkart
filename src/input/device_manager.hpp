@@ -89,7 +89,11 @@ private:
                                   InputManager::InputDriverMode mode,
                                   StateManager::ActivePlayer **player /* out */,
                                   PlayerAction *action /* out */);
-    InputDevice *mapKeyboardInput(int button_id,
+    /** Maps a keyboard key to a device/player. device_id is the physical
+     *  keyboard reported by mklib, or -1 when the origin is unknown, in which
+     *  case the first keyboard with a matching binding is used (the historical
+     *  behaviour). */
+    InputDevice *mapKeyboardInput(int device_id, int button_id,
                                   InputManager::InputDriverMode mode,
                                   StateManager::ActivePlayer **player /* out */,
                                   PlayerAction *action /* out */);
@@ -136,6 +140,9 @@ public:
     KeyboardDevice*     getKeyboard(const int i);
     KeyboardConfig*     getKeyboardConfig(const int i)      { return m_keyboard_configs.get(i); }
     KeyboardDevice*     getKeyboardFromBtnID(const int btnID);
+    /** Returns the keyboard standing for the given physical (mklib) device,
+     *  or NULL when mklib is not in use or the device is not registered. */
+    KeyboardDevice*     getKeyboardFromDeviceId(const int device_id);
 
     // ---- Multitouch device ----
     MultitouchDevice*   getMultitouchDevice()    { return m_multitouch_device; }

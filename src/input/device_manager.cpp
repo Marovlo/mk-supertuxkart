@@ -216,6 +216,24 @@ void DeviceManager::addEmptyKeyboard()
 }   // addEmptyKeyboard
 
 // -----------------------------------------------------------------------------
+/** Returns the keyboard device that stands for a physical keyboard known to
+ *  mklib. Without this, a joining player would always be bound to whichever
+ *  keyboard happens to be first in the list, and several players would end up
+ *  sharing a single device (and therefore a single player's controls). */
+KeyboardDevice* DeviceManager::getKeyboardFromDeviceId(const int device_id)
+{
+    if (device_id < 0)
+        return NULL;
+
+    for (unsigned int n = 0; n < m_keyboards.size(); n++)
+    {
+        if (m_keyboards[n].getMklibId() == device_id)
+            return m_keyboards.get(n);
+    }
+    return NULL;
+}   // getKeyboardFromDeviceId
+
+// -----------------------------------------------------------------------------
 
 void DeviceManager::addGamepad(GamePadDevice* d)
 {
@@ -266,12 +284,71 @@ bool DeviceManager::deleteConfig(DeviceConfig* config)
  *  \param[out]  action     Which action is related to this input trigger.
  *  \return                 The device to which this input belongs
  */
-InputDevice* DeviceManager::mapKeyboardInput(int button_id,
+InputDevice* DeviceManager::mapKeyboardInput(int device_id,
+                                             int button_id,
                                              InputManager::InputDriverMode mode,
                                              StateManager::ActivePlayer **player,
                                              PlayerAction *action /* out */)
 {
     const int keyboard_amount = m_keyboards.size();
+
+    // When the physical keyboard is known (mklib), only that keyboard may
+    // answer: this is what keeps two keyboards from acting on the same player.
+    if (device_id >= 0)
+    {
+        KeyboardDevice *owning_keyboard = NULL;
+        for (int n=0; n<keyboard_amount; n++)
+        {
+            KeyboardDevice *keyboard = m_keyboards.get(n);
+            if (keyboard->getMklibId() != device_id)
+                continue;
+
+            owning_keyboard = keyboard;
+            if (keyboard->processAndMapInput(Input::IT_KEYBOARD, button_id,
+                                             mode, action))
+            {
+                if (m_single_player != NULL)
+                    *player = m_single_player;
+                else if (m_assign_mode == NO_ASSIGN)
+                    *player = NULL;
+                else
+                    *player = keyboard->getPlayer();
+                return keyboard;
+            }
+            break;
+        }
+
+        // The key is not bound on that keyboard, or the physical device is not
+        // registered yet. As long as the device does not belong to a player
+        // (i.e. it has not joined), fall back to the historical behaviour so
+        // the device can still drive the UI and join the game. Once it belongs
+        // to a player it is kept strictly isolated, which prevents one
+        // keyboard from steering another player's selection.
+        bool free_device = (owning_keyboard == NULL) ||
+                           (owning_keyboard->getPlayer() == NULL);
+        if (!free_device)
+            return NULL;
+
+        for (int n=0; n<keyboard_amount; n++)
+        {
+            KeyboardDevice *keyboard = m_keyboards.get(n);
+            if (keyboard == owning_keyboard)
+                continue;
+
+            if (keyboard->processAndMapInput(Input::IT_KEYBOARD, button_id,
+                                             mode, action))
+            {
+                if (m_single_player != NULL)
+                    *player = m_single_player;
+                else if (m_assign_mode == NO_ASSIGN)
+                    *player = NULL;
+                else
+                    *player = keyboard->getPlayer();
+                return keyboard;
+            }
+        }
+        return NULL;
+    }
 
     for (int n=0; n<keyboard_amount; n++)
     {
@@ -400,13 +477,14 @@ bool DeviceManager::translateInput( Input::InputType type,
     switch (type)
     {
         case Input::IT_KEYBOARD:
-            device = mapKeyboardInput(button_id, mode, player, action);
+            device = mapKeyboardInput(device_id, button_id, mode, player, action);
             // If the action is not recognised, check if it's a fire key
             // that should be mapped to select
             if(!device && m_map_fire_to_select)
             {
                 PlayerAction fire_action = PA_BEFORE_FIRST;
-                device = mapKeyboardInput(button_id, InputManager::INGAME, player,
+                device = mapKeyboardInput(device_id, button_id,
+                                          InputManager::INGAME, player,
                                           &fire_action);
                 if (device && fire_action == PA_FIRE)
                     *action = PA_MENU_SELECT;

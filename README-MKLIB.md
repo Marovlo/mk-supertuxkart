@@ -10,6 +10,58 @@ SuperTuxKart + **mklib**：让一台电脑上的**多把物理键盘**各自控�
 
 ---
 
+## 一键构建
+
+本仓库提供一键构建脚本，自动处理依赖安装、CMake 配置和编译。
+
+### macOS（可用）
+
+```bash
+cd stk-code
+
+# 默认 Release 构建
+./build-macos.sh
+
+# Debug 构建
+./build-macos.sh Debug
+
+# 构建后直接运行
+./build-macos.sh --run
+
+# 自定义 mklib 路径
+MKLIB_ROOT=/path/to/mklib ./build-macos.sh
+```
+
+脚本会自动：
+1. 检测 mklib 路径（默认 `../../mklib`）
+2. 通过 Homebrew 安装依赖
+3. 检查 stk-assets 是否存在
+4. CMake 配置 + 编译
+
+### Windows（构建可用，多键盘功能待接线）
+
+```powershell
+cd stk-code
+
+# 默认 Release 构建
+.\build-windows.ps1
+
+# Debug 构建
+.\build-windows.ps1 -BuildType Debug
+
+# 构建后直接运行
+.\build-windows.ps1 -Run
+
+# 自定义 mklib 路径
+$env:MKLIB_ROOT = "C:\path\to\mklib"; .\build-windows.ps1
+```
+
+> **注意**：Windows 脚本可以成功构建，但多键盘分屏功能 **尚未可用**。
+> 需要完成 [SDL_SYSWMEVENT 接线](#1-挂接-sdl-系统消息事件必须尚未接线) 后才能使用。
+> 脚本顶部注释中包含详细的接线步骤和示例代码。
+
+---
+
 ## 目录结构
 
 代码与资产是分开的两个来源（与上游一致），请放在**同级目录**：

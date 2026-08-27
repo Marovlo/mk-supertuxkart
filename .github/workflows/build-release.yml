@@ -1,0 +1,289 @@
+# ============================================================================
+# SuperTuxKart + mklib 自动构建 & 发布
+#
+# 触发条件:
+#   1. Push tag (如 v1.0.0) → 自动构建并创建 GitHub Release
+#   2. 手动触发 (Actions → Run workflow) → 构建但不发布 Release
+#
+# 产物:
+#   macOS  → SuperTuxKart-macOS-<arch>.dmg  (含完整游戏资产, 可直接玩)
+#   Windows → SuperTuxKart-Windows-x64.zip  (含完整游戏资产, 多键盘功能待接线)
+#
+# 依赖:
+#   - mklib 从 Marovlo/mklib 自动拉取
+#   - stk-assets 从 SourceForge SVN 拉取 (有缓存, 首次约15分钟)
+# ============================================================================
+
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      skip_assets:
+        description: '跳过 stk-assets (仅构建引擎, 不可玩)'
+        type: boolean
+        required: false
+        default: false
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  # ==========================================================================
+  # macOS 构建 (Apple Silicon, 多键盘功能可用)
+  # ==========================================================================
+  build-macos:
+    runs-on: macos-14
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact-name }}
+    steps:
+      - name: Checkout stk-code
+        uses: actions/checkout@v4
+
+      - name: Checkout mklib
+        uses: actions/checkout@v4
+        with:
+          repository: Marovlo/mklib
+          path: ../mklib
+
+      - name: Install Homebrew dependencies
+        run: |
+          brew install cmake subversion libogg libvorbis openal-soft freetype curl harfbuzz libjpeg libsamplerate sdl2
+
+      - name: Cache stk-assets
+        if: ${{ !inputs.skip_assets }}
+        id: cache-assets
+        uses: actions/cache@v4
+        with:
+          path: ../stk-assets
+          key: stk-assets-svn-${{ github.run_id }}
+          restore-keys: |
+            stk-assets-svn-
+
+      - name: Checkout stk-assets (SVN)
+        if: ${{ !inputs.skip_assets && steps.cache-assets.outputs.cache-hit != 'true' }}
+        run: |
+          echo "拉取 stk-assets (~1.4GB, 首次约15分钟)..."
+          svn export --force https://svn.code.sf.net/p/supertuxkart/code/stk-assets ../stk-assets
+
+      - name: CMake Configure
+        run: |
+          cmake . \
+            -B build \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DUSE_WIIUSE=OFF \
+            -DUSE_MKLIB=ON \
+            -DMKLIB_ROOT=${{ github.workspace }}/../mklib \
+            -DCHECK_ASSETS=OFF
+
+      - name: Build
+        run: cmake --build build --parallel $(sysctl -n hw.ncpu)
+
+      - name: Package .app bundle
+        id: package
+        run: |
+          APP="build/bin/SuperTuxKart.app"
+          RESOURCES="$APP/Contents/Resources"
+
+          # 移除 CMake 创建的 data 软链接
+          rm -f "$RESOURCES"
+
+          # 创建真实 Resources 目录
+          mkdir -p "$RESOURCES"
+
+          # 复制基础 data/ 内容 (UI, shaders, skins, configs, fonts)
+          cp -R data/* "$RESOURCES/"
+
+          # 复制 stk-assets (tracks, karts, models, music, sfx, textures, library)
+          if [ -d ../stk-assets ]; then
+            echo "合并 stk-assets..."
+            cp -R ../stk-assets/* "$RESOURCES/"
+          else
+            echo "警告: stk-assets 不存在, 产物将不包含赛道和卡丁车"
+          fi
+
+          # Ad-hoc 签名 (避免 macOS Gatekeeper 拦截)
+          codesign --force --deep --sign - "$APP"
+
+          # 打包 .dmg
+          ARCH=$(uname -m)
+          DMG_NAME="SuperTuxKart-macOS-${ARCH}.dmg"
+          hdiutil create -volname "SuperTuxKart" -srcfolder "$APP" -ov -format UDZO "$DMG_NAME"
+
+          echo "artifact-name=$DMG_NAME" >> $GITHUB_OUTPUT
+          echo "✅ 打包完成: $DMG_NAME"
+          ls -lh "$DMG_NAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macOS-dmg
+          path: SuperTuxKart-macOS-*.dmg
+          retention-days: 30
+
+  # ==========================================================================
+  # Windows 构建 (多键盘功能尚未接线, 但可玩 STK)
+  # ==========================================================================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout stk-code
+        uses: actions/checkout@v4
+
+      - name: Checkout mklib
+        uses: actions/checkout@v4
+        with:
+          repository: Marovlo/mklib
+          path: ../mklib
+
+      - name: Install Subversion (for stk-assets)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command svn -ErrorAction SilentlyContinue)) {
+            choco install svn -y --no-progress
+          }
+
+      - name: Setup Windows dependencies
+        shell: pwsh
+        run: |
+          # 下载 STK 官方 Windows 依赖库
+          $depUrl = "https://github.com/supertuxkart/dependencies-windows/archive/master.zip"
+          $zipFile = "$env:TEMP\stk-deps.zip"
+          Invoke-WebRequest -Uri $depUrl -OutFile $zipFile -UseBasicParsing
+          Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
+          $extractedDir = "$env:TEMP\dependencies-windows-master"
+          # CMakeLists.txt 期望依赖库在 stk-code/dependencies-win-x86_64/ 目录内
+          $targetDir = "dependencies-win-x86_64"
+          # 查找 64 位依赖目录
+          $win64Dir = Get-ChildItem $extractedDir -Directory | Where-Object { $_.Name -match "x86_64|64" } | Select-Object -First 1
+          if ($win64Dir) {
+            Copy-Item $win64Dir.FullName $targetDir -Recurse -Force
+          } else {
+            # 回退: 直接复制整个目录
+            Copy-Item $extractedDir $targetDir -Recurse -Force
+          }
+          Write-Host "Windows 依赖库已就绪: $(Test-Path $targetDir)"
+
+      - name: Cache stk-assets
+        if: ${{ !inputs.skip_assets }}
+        id: cache-assets
+        uses: actions/cache@v4
+        with:
+          path: ../stk-assets
+          key: stk-assets-svn-win-${{ github.run_id }}
+          restore-keys: |
+            stk-assets-svn-win-
+
+      - name: Checkout stk-assets (SVN)
+        if: ${{ !inputs.skip_assets && steps.cache-assets.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          Write-Host "拉取 stk-assets (~1.4GB, 首次约15分钟)..."
+          svn export --force https://svn.code.sf.net/p/supertuxkart/code/stk-assets ../stk-assets
+
+      - name: CMake Configure
+        shell: pwsh
+        run: |
+          cmake . `
+            -B build `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DUSE_WIIUSE=OFF `
+            -DUSE_MKLIB=ON `
+            "-DMKLIB_ROOT=$(Resolve-Path '../mklib')" `
+            -DCHECK_ASSETS=OFF
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel $env:NUMBER_OF_PROCESSORS
+
+      - name: Package .zip
+        shell: pwsh
+        run: |
+          $binDir = "build\bin\${{ env.BUILD_TYPE }}"
+          if (-not (Test-Path $binDir)) {
+            $binDir = "build\bin"
+          }
+
+          # 创建发布目录
+          $releaseDir = "SuperTuxKart-Windows-x64"
+          New-Item -ItemType Directory -Force -Path $releaseDir
+
+          # 复制可执行文件和依赖 DLL
+          Copy-Item "$binDir\*" $releaseDir -Recurse -Force
+
+          # 复制 data/ 内容
+          $dataDir = "$releaseDir\data"
+          New-Item -ItemType Directory -Force -Path $dataDir
+          Copy-Item "data\*" $dataDir -Recurse -Force
+
+          # 合并 stk-assets
+          if (Test-Path "..\stk-assets") {
+            Write-Host "合并 stk-assets..."
+            Copy-Item "..\stk-assets\*" $dataDir -Recurse -Force
+          } else {
+            Write-Host "警告: stk-assets 不存在"
+          }
+
+          # 打包 zip
+          Compress-Archive -Path $releaseDir -DestinationPath "SuperTuxKart-Windows-x64.zip" -Force
+          Write-Host "打包完成"
+          Get-ChildItem "SuperTuxKart-Windows-x64.zip" | Select-Object Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-zip
+          path: SuperTuxKart-Windows-x64.zip
+          retention-days: 30
+
+  # ==========================================================================
+  # 发布 GitHub Release (仅 tag push 触发时)
+  # ==========================================================================
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SuperTuxKart + mklib ${{ github.ref_name }}
+          body: |
+            ## SuperTuxKart + mklib 多键盘版
+
+            ### 下载说明
+
+            | 平台 | 文件 | 多键盘功能 | 说明 |
+            |---|---|---|---|
+            | macOS (Apple Silicon) | `SuperTuxKart-macOS-arm64.dmg` | ✅ 可用 | 双键盘分屏已验证 |
+            | Windows x64 | `SuperTuxKart-Windows-x64.zip` | ❌ 未接线 | 可玩 STK, 但多键盘不工作 |
+
+            ### macOS 安装
+            1. 下载 `.dmg` 文件
+            2. 打开, 拖拽 SuperTuxKart 到 Applications
+            3. 首次打开: 右键 → 打开 (需允许未签名应用)
+
+            ### Windows 安装
+            1. 下载 `.zip` 文件
+            2. 解压到任意目录
+            3. 运行 `supertuxkart.exe`
+
+            > Windows 多键盘功能需要完成 SDL_SYSWMEVENT 接线后才能使用。
+            > 详见 [README-MKLIB.md](README-MKLIB.md#windows-后续开发工作)
+          files: artifacts/*
+          draft: false
+          prerelease: false
